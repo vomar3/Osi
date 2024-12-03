@@ -1,9 +1,8 @@
-#include <string.h>
 #include <stdlib.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <semaphore.h>
 #include <time.h>
-#include <unistd.h>
 
 #define ROWS 10
 #define COLS 10
@@ -15,130 +14,102 @@ typedef struct {
     int start_row;
     int end_row;
     int window_size;
-    int iterations;
 } ThreadArgs;
-
-typedef enum {
-    OK,
-    INVALID_INPUT,
-    SYSTEM_ERROR
-} return_code;
-
-sem_t semaphore;
 
 int compare(const void* a, const void* b);
 
 int find_median(int* window, int size);
 
-void* median_philter(void* args);
+void* median_filter(void* args);
 
 void copy_temp_to_matrix();
 
-int is_number(const char* str);
-
 void generate_matrix();
-
-void int_to_str(int num, char* buffer);
 
 void print_matrix(int mat[ROWS][COLS]);
 
+sem_t start_sem;
+sem_t end_sem;
+
+int stop_threads = 0;
+
 int main(int argc, char* argv[]) {
     if (argc != 4) {
-        char msg[] = "Usage: ./a.out <window_size> <iterations> <max_threads>\n";
-        write(STDERR_FILENO, msg, sizeof(msg) - 1);
-        return INVALID_INPUT;
+        fprintf(stderr, "Usage: ./a.out <window_size> <iterations> <max_threads>\n");
+        return EXIT_FAILURE;
     }
 
-    int window_size, iterations, max_threads;
+    int window_size = atoi(argv[1]);
+    int iterations = atoi(argv[2]);
+    int max_threads = atoi(argv[3]);
 
-    if (!is_number(argv[1]) || !is_number(argv[2]) || !is_number(argv[3])) {
-        char msg[] = "all arguments must be positive integers.\n";
-        write(STDERR_FILENO, msg, sizeof(msg) - 1);
-        return INVALID_INPUT;
-    }
-    window_size = atoi(argv[1]);
-    iterations = atoi(argv[2]);
-    max_threads = atoi(argv[3]);
-
-    if (!(window_size & 1)) {
-        char msg[] = "window size must be not a multiple of 2\n";
-        write(STDERR_FILENO, msg, sizeof(msg) - 1);
-        return INVALID_INPUT;
-    }
-
-    if (window_size < 2) {
-        char msg[] = "window size must be >= 2\n";
-        write(STDERR_FILENO, msg, sizeof(msg) - 1);
-        return INVALID_INPUT;
-    }
-
-    if (iterations <= 0 || max_threads <= 0) {
-        char msg[] = "mterations and threads count must be positive integers\n";
-        write(STDERR_FILENO, msg, sizeof(msg) - 1);
-        return INVALID_INPUT;
+    if (window_size % 2 == 0 || window_size < 1 || iterations < 1 || max_threads < 1) {
+        fprintf(stderr, "Invalid arguments. Window size must be odd and >= 1. Iterations and threads > 0.\n");
+        return EXIT_FAILURE;
     }
 
     if (max_threads > ROWS) {
-        char msg[] = "max threads cannot exceed the number of rows in the matrix\n";
-        write(STDERR_FILENO, msg, sizeof(msg) - 1);
-        return INVALID_INPUT;
-    }
-
-    if (sem_init(&semaphore, 0, max_threads) != 0) {
-        char msg[] = "сouldn't initialize semaphore.\n";
-        write(STDERR_FILENO, msg, sizeof(msg) - 1);
-        return SYSTEM_ERROR;
+        max_threads = ROWS;
     }
 
     generate_matrix();
 
-    char msg[] = "original matrix:\n";
-    write(STDOUT_FILENO, msg, sizeof(msg) - 1);
+    printf("Original matrix:\n");
     print_matrix(matrix);
 
     pthread_t threads[max_threads];
     ThreadArgs thread_args[max_threads];
     int rows_per_thread = ROWS / max_threads;
 
+    sem_init(&start_sem, 0, 0);
+    sem_init(&end_sem, 0, 0);
+
     for (int i = 0; i < max_threads; i++) {
         thread_args[i].start_row = i * rows_per_thread;
         thread_args[i].end_row = (i == max_threads - 1) ? ROWS : (i + 1) * rows_per_thread;
         thread_args[i].window_size = window_size;
-        thread_args[i].iterations = iterations;
 
-        if (pthread_create(&threads[i], NULL, median_philter, &thread_args[i]) != 0) {
-            char msg[] = "couldn't create thread.\n";
-            write(STDERR_FILENO, msg, sizeof(msg) - 1);
-            return SYSTEM_ERROR;
+        if (pthread_create(&threads[i], NULL, median_filter, &thread_args[i]) != 0) {
+            perror("pthread_create failed");
+            return EXIT_FAILURE;
         }
     }
 
+    clock_t start_time = clock();
+
     for (int iter = 0; iter < iterations; iter++) {
         for (int i = 0; i < max_threads; i++) {
-            sem_post(&semaphore);
+            sem_post(&start_sem);
         }
 
         for (int i = 0; i < max_threads; i++) {
-            sem_wait(&semaphore);
+            sem_wait(&end_sem);
         }
 
         copy_temp_to_matrix();
     }
+
+    stop_threads = 1;
     for (int i = 0; i < max_threads; i++) {
-        if (pthread_join(threads[i], NULL) != 0) {
-            char msg[] = "couldn't join thread\n";
-            write(STDERR_FILENO, msg, sizeof(msg) - 1);
-            return SYSTEM_ERROR;
-        }
+        sem_post(&start_sem);
     }
 
-    char final_msg[] = "result matrix:\n";
-    write(STDOUT_FILENO, final_msg, sizeof(final_msg) - 1);
+    for (int i = 0; i < max_threads; i++) {
+        pthread_join(threads[i], NULL);
+    }
+
+    sem_destroy(&start_sem);
+    sem_destroy(&end_sem);
+
+    clock_t end_time = clock();
+
+    printf("Result matrix:\n");
     print_matrix(matrix);
 
-    sem_destroy(&semaphore);
+    double time_spent = (double)(end_time - start_time) / CLOCKS_PER_SEC;
+    printf("Time taken: %f seconds\n", time_spent);
 
-    return OK;
+    return EXIT_SUCCESS;
 }
 
 int compare(const void* a, const void* b) {
@@ -150,16 +121,19 @@ int find_median(int* window, int size) {
     return window[size / 2];
 }
 
-void* median_philter(void* args) {
+void* median_filter(void* args) {
     ThreadArgs* thread_args = (ThreadArgs*)args;
     int start_row = thread_args->start_row;
     int end_row = thread_args->end_row;
     int window_size = thread_args->window_size;
-    int iterations = thread_args->iterations;
     int offset = window_size / 2;
 
-    for (int iter = 0; iter < iterations; iter++) {
-        sem_wait(&semaphore);
+    while (1) {
+        sem_wait(&start_sem);
+
+        if (stop_threads) {
+            break;
+        }
 
         for (int i = start_row; i < end_row; i++) {
             for (int j = 0; j < COLS; j++) {
@@ -178,8 +152,9 @@ void* median_philter(void* args) {
             }
         }
 
-        sem_post(&semaphore);
+        sem_post(&end_sem);
     }
+
     return NULL;
 }
 
@@ -191,62 +166,20 @@ void copy_temp_to_matrix() {
     }
 }
 
-int is_number(const char* str) {
-    while (*str) {
-        if (*str < '0' || *str > '9') return 0;
-        str++;
-    }
-    return INVALID_INPUT;
-}
-
 void generate_matrix() {
     srand(time(NULL));
     for (int i = 0; i < ROWS; i++) {
         for (int j = 0; j < COLS; j++) {
-            matrix[i][j] = rand() % 100;
+            matrix[i][j] = rand() % 100 + 1;
         }
     }
-}
-
-void int_to_str(int num, char* buffer) {
-    char temp[12];
-    int i = 0, j = 0;
-
-    if (num < 0) {
-        buffer[j++] = '-';
-        num = -num;
-    }
-
-    do {
-        temp[i++] = (num % 10) + '0';
-        num /= 10;
-    } while (num > 0);
-
-    while (i > 0) {
-        buffer[j++] = temp[--i];
-    }
-
-    buffer[j] = '\0';
 }
 
 void print_matrix(int mat[ROWS][COLS]) {
-    char buffer[64];
     for (int i = 0; i < ROWS; i++) {
-        int offset = 0;
         for (int j = 0; j < COLS; j++) {
-            char num_str[12];
-            int_to_str(mat[i][j], num_str);
-            int len = strlen(num_str);
-            if (offset + len + 1 < sizeof(buffer)) {
-                memcpy(buffer + offset, num_str, len);
-                offset += len;
-
-                buffer[offset++] = ' ';
-            }
+            printf("%3d ", mat[i][j]);
         }
-
-        buffer[offset - 1] = '\n';
-
-        write(STDOUT_FILENO, buffer, offset);
+        printf("\n");
     }
 }
