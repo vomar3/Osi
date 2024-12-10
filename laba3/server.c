@@ -1,258 +1,109 @@
 #include <stdint.h>
 #include <stdbool.h>
-
 #include <unistd.h>
-#include <sys/wait.h>
+#include <sys/mman.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
+#include <semaphore.h>
+#include <sys/wait.h>
 
-static char CLIENT_PROGRAM_NAME[] = "client";
+#define SHM_NAME "/shared_memory"
+#define BUFFER_SIZE 4096
 
-size_t my_strlen(char *str) {
-    char *end = str;
-    while(*end++);
-    return end - str - 1;
-}
+typedef struct {
+    char buffer1[BUFFER_SIZE];
+    char buffer2[BUFFER_SIZE];
+    sem_t sem_parent;
+    sem_t sem_child1;
+    sem_t sem_child2;
+    bool exit_flag;
+} SharedMemory;
 
-int main(int argc, char **argv)
-{
-    if (argc == 1)
-    {
-        char msg[1024];
-        uint32_t len = snprintf(msg, sizeof(msg) - 1, "usage: %s filename\n", argv[0]);
-        write(STDERR_FILENO, msg, len);
-        exit(EXIT_SUCCESS);
-    }
-
-    char progpath[1024];
-    {
-        ssize_t len = readlink("/proc/self/exe", progpath,
-                               sizeof(progpath) - 1);
-        if (len == -1)
-        {
-            const char msg[] = "error: failed to read full program path\n";
-            write(STDERR_FILENO, msg, sizeof(msg));
-            exit(EXIT_FAILURE);
-        }
-
-        while (progpath[len] != '/')
-            --len;
-
-        progpath[len] = '\0';
-    }
-
-    int channel_1[2], channel_2[2];
-    if (pipe(channel_1) == -1)
-    {
-        const char msg[] = "error: failed to create pipe\n";
-        write(STDERR_FILENO, msg, sizeof(msg));
-        exit(EXIT_FAILURE);
-    }
-    if (pipe(channel_2) == -1)
-    {
-        const char msg[] = "error: failed to create pipe\n";
-        write(STDERR_FILENO, msg, sizeof(msg));
+int main(int argc, char **argv) {
+    if (argc < 3) {
+        fprintf(stderr, "Usage: %s file1 file2\n", argv[0]);
         exit(EXIT_FAILURE);
     }
 
-    const pid_t child_1 = fork();
+    int shm_fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0600);
+    if (shm_fd == -1) {
+        perror("shm_open");
+        exit(EXIT_FAILURE);
+    }
 
-    switch (child_1)
-    {
-        case -1:
-        {
-            const char msg[] = "error: failed to spawn new process\n";
-            write(STDERR_FILENO, msg, sizeof(msg));
-            exit(EXIT_FAILURE);
+    if (ftruncate(shm_fd, sizeof(SharedMemory)) == -1) {
+        perror("ftruncate");
+        exit(EXIT_FAILURE);
+    }
+
+    SharedMemory *shm = mmap(NULL, sizeof(SharedMemory), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    if (shm == MAP_FAILED) {
+        perror("mmap");
+        exit(EXIT_FAILURE);
+    }
+
+    sem_init(&shm->sem_parent, 1, 1);
+    sem_init(&shm->sem_child1, 1, 0);
+    sem_init(&shm->sem_child2, 1, 0);
+    shm->exit_flag = false;
+
+    pid_t child1 = fork();
+    if (child1 == 0) {
+        execlp("./client", "./client", "client1", argv[1], NULL);
+        perror("execlp");
+        exit(EXIT_FAILURE);
+    }
+
+    pid_t child2 = fork();
+    if (child2 == 0) {
+        execlp("./client", "./client", "client2", argv[2], NULL);
+        perror("execlp");
+        exit(EXIT_FAILURE);
+    }
+
+    char input[BUFFER_SIZE];
+    while (true) {
+        sem_wait(&shm->sem_parent);
+
+        printf("Input strings (press ENTER to exit): ");
+        if (fgets(input, sizeof(input), stdin) == NULL) {
+            perror("fgets");
+            continue;
         }
-            break;
 
-        case 0:
-        {
-            pid_t pid = getpid();
-
-            if (dup2(channel_1[STDIN_FILENO], STDIN_FILENO) == -1)
-            {
-                char msg[128];
-                snprintf(msg, sizeof(msg), "%d: failed to use dup2\n", pid);
-                write(STDERR_FILENO, msg, sizeof(msg));
-                exit(EXIT_FAILURE);
-            }
-            if (close(channel_1[STDOUT_FILENO]) == -1)
-            {
-                char msg[128];
-                snprintf(msg, sizeof(msg), "%d: failed to close pipe\n", pid);
-                write(STDERR_FILENO, msg, sizeof(msg));
-                exit(EXIT_FAILURE);
-            }
-
-            {
-                char msg[64];
-                const int32_t length = snprintf(msg, sizeof(msg),
-                                                "%d: I'm a child1\n", pid);
-                write(STDOUT_FILENO, msg, length);
-            }
-
-            {
-                char path[1024];
-                snprintf(path, sizeof(path) - 1, "%s/%s", progpath, CLIENT_PROGRAM_NAME);
-
-                char *const args[] = {CLIENT_PROGRAM_NAME, argv[1], NULL};
-
-                int32_t status = execv(path, args);
-
-                if (status == -1)
-                {
-                    const char msg[] = "error: failed to exec into new exectuable image\n";
-                    write(STDERR_FILENO, msg, sizeof(msg));
-                    exit(EXIT_FAILURE);
-                }
-            }
+        size_t len = strlen(input);
+        if (len > 0 && input[len - 1] == '\n') {
+            input[len - 1] = '\0';
         }
+
+        if (input[0] == '\0') {
+            shm->exit_flag = true;
+            sem_post(&shm->sem_child1);
+            sem_post(&shm->sem_child2);
             break;
+        }
 
-        default:
-        {
-            const pid_t child_2 = fork();
-
-            switch (child_2)
-            {
-                case -1:
-                {
-                    const char msg[] = "error: failed to spawn new process\n";
-                    write(STDERR_FILENO, msg, sizeof(msg));
-                    exit(EXIT_FAILURE);
-                }
-                    break;
-
-                case 0:
-                {
-                    pid_t pid = getpid();
-
-                    if (dup2(channel_2[STDIN_FILENO], STDIN_FILENO) == -1)
-                    {
-                        char msg[128];
-                        snprintf(msg, sizeof(msg), "%d: failed to use dup2\n", pid);
-                        write(STDERR_FILENO, msg, sizeof(msg));
-                        exit(EXIT_FAILURE);
-                    }
-                    if (close(channel_2[STDOUT_FILENO]) == -1)
-                    {
-                        char msg[128];
-                        snprintf(msg, sizeof(msg), "%d: failed to close pipe\n", pid);
-                        write(STDERR_FILENO, msg, sizeof(msg));
-                        exit(EXIT_FAILURE);
-                    }
-
-                    {
-                        char msg[64];
-                        const int32_t length = snprintf(msg, sizeof(msg),
-                                                        "%d: I'm a child2\n", pid);
-                        write(STDOUT_FILENO, msg, length);
-                    }
-
-                    {
-                        char path[1024];
-                        snprintf(path, sizeof(path) - 1, "%s/%s", progpath, CLIENT_PROGRAM_NAME);
-
-                        char *const args[] = {CLIENT_PROGRAM_NAME, argv[2], NULL};
-
-                        int32_t status = execv(path, args);
-
-                        if (status == -1)
-                        {
-                            const char msg[] = "error: failed to exec into new exectuable image\n";
-                            write(STDERR_FILENO, msg, sizeof(msg));
-                            exit(EXIT_FAILURE);
-                        }
-                    }
-                }
-                    break;
-
-                default:
-                {
-                    pid_t pid = getpid();
-
-                    {
-                        char msg[128];
-                        const int32_t length = snprintf(msg, sizeof(msg),
-                                                        "%d: I'm a parent, my child1 & child2 has PID %d %d\n", pid, child_1, child_2);
-                        write(STDOUT_FILENO, msg, length);
-                    }
-                    if (close(channel_1[STDIN_FILENO]) == -1 || close(channel_2[STDIN_FILENO]) == -1)
-                    {
-                        const char msg[] = "error: server failed to close pipe\n";
-                        write(STDERR_FILENO, msg, sizeof(msg));
-                        exit(EXIT_FAILURE);
-                    }
-
-                    char buf[4096];
-                    ssize_t bytes;
-
-                    {
-                        sleep(1);
-                        const char msg[] = "Input strings:\n";
-                        write(STDOUT_FILENO, msg, sizeof(msg));
-                    }
-                    while (bytes = read(STDIN_FILENO, buf, sizeof(buf)))
-                    {
-                        if (bytes < 0)
-                        {
-                            const char msg[] = "error: failed to read from stdin\n";
-                            write(STDERR_FILENO, msg, sizeof(msg));
-                            exit(EXIT_FAILURE);
-                        }
-                        else if (buf[0] == '\n')
-                        {
-                            break;
-                        }
-                        {
-                            buf[bytes - 1] = '\0';
-                            int32_t written;
-                            size_t len = my_strlen(buf);
-                            if (len > 10)
-                                written = write(channel_1[STDOUT_FILENO], buf, bytes);
-                            else
-                                written = write(channel_2[STDOUT_FILENO], buf, bytes);
-                            if (written != bytes)
-                            {
-                                const char msg[] = "error: client failed to write to file\n";
-                                write(STDERR_FILENO, msg, sizeof(msg));
-                                exit(EXIT_FAILURE);
-                            }
-                        }
-                    }
-                    buf[0] = '\n';
-                    if (write(channel_1[STDOUT_FILENO], buf, sizeof(char)) == -1 || write(channel_2[STDOUT_FILENO], buf, sizeof(char)) == -1)
-                    {
-                        const char msg[] = "error: server failed to write to file\n";
-                        write(STDERR_FILENO, msg, sizeof(msg));
-                        exit(EXIT_FAILURE);
-                    }
-                    if (close(channel_1[STDOUT_FILENO]) == -1 || close(channel_2[STDOUT_FILENO] == -1))
-                    {
-                        const char msg[] = "error: server failed to close pipe\n";
-                        write(STDERR_FILENO, msg, sizeof(msg));
-                        exit(EXIT_FAILURE);
-                    }
-
-                    // NOTE: `wait` blocks the parent until childs exits
-                    int child_status;
-                    pid_t wpid;
-                    while ((wpid = wait(&child_status) > 0))
-                    {
-                        if (child_status != EXIT_SUCCESS)
-                        {
-                            const char msg[] = "error: child exited with error\n";
-                            write(STDERR_FILENO, msg, sizeof(msg));
-                            exit(child_status);
-                        }
-                    }
-                }
-                    break;
-            }
-            break;
+        if (strlen(input) > 10) {
+            strncpy(shm->buffer1, input, BUFFER_SIZE - 1);
+            shm->buffer1[BUFFER_SIZE - 1] = '\0';
+            sem_post(&shm->sem_child1);
+        } else {
+            strncpy(shm->buffer2, input, BUFFER_SIZE - 1);
+            shm->buffer2[BUFFER_SIZE - 1] = '\0';
+            sem_post(&shm->sem_child2);
         }
     }
+
+    wait(NULL);
+    wait(NULL);
+
+    sem_destroy(&shm->sem_parent);
+    sem_destroy(&shm->sem_child1);
+    sem_destroy(&shm->sem_child2);
+    munmap(shm, sizeof(SharedMemory));
+    shm_unlink(SHM_NAME);
+
     return 0;
 }

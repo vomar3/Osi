@@ -1,81 +1,92 @@
 #include <stdint.h>
 #include <stdbool.h>
-
-#include <stdlib.h>
 #include <unistd.h>
+#include <sys/mman.h>
 #include <fcntl.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <semaphore.h>
 
-void delete(char *str) {
-    if (str == NULL) {
-        return;
-    }
+#define SHM_NAME "/shared_memory"
+#define BUFFER_SIZE 4096
 
-    char vowels[] = "AEIOUYaeiouy";
-    size_t len = strlen(str);
+typedef struct {
+    char buffer1[BUFFER_SIZE];
+    char buffer2[BUFFER_SIZE];
+    sem_t sem_parent;
+    sem_t sem_child1;
+    sem_t sem_child2;
+    bool exit_flag;
+} SharedMemory;
+
+void delete_vowels(char *str) {
+    if (!str) return;
+
+    const char *vowels = "AEIOUYaeiouy";
     size_t j = 0;
-
-    for (size_t i = 0; i < len; ++i) {
-        if (strchr(vowels, str[i]) == NULL) {
+    for (size_t i = 0; str[i] != '\0'; ++i) {
+        if (!strchr(vowels, str[i])) {
             str[j++] = str[i];
         }
     }
-
     str[j] = '\0';
 }
 
-int main(int argc, char **argv)
-{
-    char buf[4096];
-    ssize_t bytes;
-
-    pid_t pid = getpid();
-
-    // NOTE: `O_WRONLY` only enables file for writing
-    // NOTE: `O_CREAT` creates the requested file if absent
-    // NOTE: `O_TRUNC` empties the file prior to opening
-    // NOTE: `O_APPEND` subsequent writes are being appended instead of overwritten
-    int32_t file = open(argv[1], O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0600);
-    if (file == -1)
-    {
-        const char msg[] = "error: failed to open requested file\n";
-        write(STDERR_FILENO, msg, sizeof(msg));
+int main(int argc, char **argv) {
+    if (argc != 3) {
+        fprintf(stderr, "Usage: %s <client_id> <output_file>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
 
-    while (bytes = read(STDIN_FILENO, buf, sizeof(buf)))
-    {
-        if (bytes < 0)
-        {
-            const char msg[] = "error: failed to read from stdin\n";
-            write(STDERR_FILENO, msg, sizeof(msg));
+    int shm_fd = shm_open(SHM_NAME, O_RDWR, 0600);
+    if (shm_fd == -1) {
+        perror("shm_open");
+        exit(EXIT_FAILURE);
+    }
+
+    SharedMemory *shm = mmap(NULL, sizeof(SharedMemory), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    if (shm == MAP_FAILED) {
+        perror("mmap");
+        exit(EXIT_FAILURE);
+    }
+
+    int output_file = open(argv[2], O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (output_file == -1) {
+        perror("open");
+        exit(EXIT_FAILURE);
+    }
+
+    sem_t *my_sem;
+    char *my_buffer;
+
+    if (strcmp(argv[1], "client1") == 0) {
+        my_sem = &shm->sem_child1;
+        my_buffer = shm->buffer1;
+    } else {
+        my_sem = &shm->sem_child2;
+        my_buffer = shm->buffer2;
+    }
+
+    while (true) {
+        sem_wait(my_sem);
+
+        if (shm->exit_flag) break;
+
+        delete_vowels(my_buffer);
+
+        size_t len = strlen(my_buffer);
+        if (write(output_file, my_buffer, len) == -1) {
+            perror("write");
             exit(EXIT_FAILURE);
         }
-        else if (buf[0] == '\n')
-        {
-            break;
-        }
 
-        {
-            buf[bytes - 1] = '\0';
-            delete(buf);
-            size_t len = strlen(buf);
-            buf[len] = '\n';
-            int32_t written = write(file, buf, len + 1);
-            if (written != len + 1)
-            {
-                const char msg[] = "error: client failed to write to file\n";
-                write(STDERR_FILENO, msg, sizeof(msg));
-                exit(EXIT_FAILURE);
-            }
-        }
+        write(output_file, "\n", 1);
+
+        sem_post(&shm->sem_parent);
     }
-    if (close(file) == -1)
-    {
-        const char msg[] = "error: client failed to close file\n";
-        write(STDERR_FILENO, msg, sizeof(msg));
-        exit(EXIT_FAILURE);
-    }
+
+    close(output_file);
+    munmap(shm, sizeof(SharedMemory));
     return 0;
 }
