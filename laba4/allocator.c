@@ -1,6 +1,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <math.h>
+#include <time.h>
 
 #define MAX_BUDDY_ORDER 20
 #define MEMORY_SIZE (1 << MAX_BUDDY_ORDER)
@@ -40,11 +41,12 @@ void* buddy_allocator_alloc(BuddyAllocator* allocator, size_t size);
 
 void buddy_allocator_free(BuddyAllocator* allocator, void* memory);
 
+void measure_time(void (*func)(), const char* message);
+
 void test_allocators();
 
 int main() {
     test_allocators();
-
     return 0;
 }
 
@@ -62,10 +64,6 @@ Allocator* allocator_create(void* memory, size_t size) {
     allocator->free_list->next = NULL;
 
     return allocator;
-}
-
-void allocator_destroy(Allocator* allocator) {
-    // Ничего не делаем, так как память глобальная
 }
 
 void* allocator_alloc(Allocator* allocator, size_t size) {
@@ -133,10 +131,6 @@ BuddyAllocator* buddy_allocator_create(void* memory, size_t size) {
     return allocator;
 }
 
-void buddy_allocator_destroy(BuddyAllocator* allocator) {
-    // Ничего не делаем, так как память глобальная
-}
-
 void* buddy_allocator_alloc(BuddyAllocator* allocator, size_t size) {
     if (size == 0) {
         return NULL;
@@ -180,37 +174,61 @@ void buddy_allocator_free(BuddyAllocator* allocator, void* memory) {
 }
 
 void test_allocators() {
-    printf("Тестирование списка свободных блоков\n");
+    struct timespec start, end;
+
+    printf("Тестирование списка свободных блоков:\n");
 
     Allocator* list_allocator = allocator_create(global_memory, MEMORY_SIZE);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
     void* block1 = allocator_alloc(list_allocator, 256);
-    printf("Выделен блок: %p\n", block1);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    double alloc_time1 = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+    printf("Выделен блок: %p, время: %.9f секунд\n", block1, alloc_time1);
 
+    clock_gettime(CLOCK_MONOTONIC, &start);
     void* block2 = allocator_alloc(list_allocator, 512);
-    printf("Выделен блок: %p\n", block2);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    double alloc_time2 = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+    printf("Выделен блок: %p, время: %.9f секунд\n", block2, alloc_time2);
 
+    clock_gettime(CLOCK_MONOTONIC, &start);
     allocator_free(list_allocator, block1);
-    printf("Освобождён блок: %p\n", block1);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    double free_time1 = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+    printf("Освобождён блок: %p, время: %.9f секунд\n", block1, free_time1);
 
+    clock_gettime(CLOCK_MONOTONIC, &start);
     allocator_free(list_allocator, block2);
-    printf("Освобождён блок: %p\n", block2);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    double free_time2 = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+    printf("Освобождён блок: %p, время: %.9f секунд\n", block2, free_time2);
 
-    allocator_destroy(list_allocator);
-
-    printf("\nТестирование алгоритма двойников\n");
+    printf("\nТестирование алгоритма двойников:\n");
 
     BuddyAllocator* buddy_allocator = buddy_allocator_create(global_memory, MEMORY_SIZE);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
     void* buddy_block1 = buddy_allocator_alloc(buddy_allocator, 256);
-    printf("Выделен блок: %p\n", buddy_block1);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    double buddy_alloc_time1 = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+    printf("Выделен блок: %p, время: %.9f секунд\n", buddy_block1, buddy_alloc_time1);
 
+    clock_gettime(CLOCK_MONOTONIC, &start);
     void* buddy_block2 = buddy_allocator_alloc(buddy_allocator, 512);
-    printf("Выделен блок: %p\n", buddy_block2);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    double buddy_alloc_time2 = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+    printf("Выделен блок: %p, время: %.9f секунд\n", buddy_block2, buddy_alloc_time2);
 
+    clock_gettime(CLOCK_MONOTONIC, &start);
     buddy_allocator_free(buddy_allocator, buddy_block1);
-    printf("Освобождён блок: %p\n", buddy_block1);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    double buddy_free_time1 = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+    printf("Освобождён блок: %p, время: %.9f секунд\n", buddy_block1, buddy_free_time1);
 
+    clock_gettime(CLOCK_MONOTONIC, &start);
     buddy_allocator_free(buddy_allocator, buddy_block2);
-    printf("Освобождён блок: %p\n", buddy_block2);
-
-    buddy_allocator_destroy(buddy_allocator);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    double buddy_free_time2 = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+    printf("Освобождён блок: %p, время: %.9f секунд\n", buddy_block2, buddy_free_time2);
 }
