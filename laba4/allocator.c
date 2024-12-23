@@ -111,7 +111,7 @@ int main() {
     double free_time3 = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
     printf("Освобождён блок: %p (id=%d, name=%s, value=%.2f), время: %.9f секунд\n", object3, object3->id, object3->name, object3->value, free_time3);
 
-    printf("\nТестирование аллокатора с алгоритмом Buddy:\n");
+    printf("\nТестирование аллокатора с алгоритмом двойников:\n");
 
     BuddyAllocator* buddy_allocator = buddy_allocator_create(global_memory, MEMORY_SIZE);
 
