@@ -13,6 +13,19 @@ typedef struct Object {
 } Object;
 
 int main() {
+    void* allocator_lib = dlopen("./liballocator.so", RTLD_LAZY);
+    if (!allocator_lib) {
+        fprintf(stderr, "Ошибка загрузки библиотеки liballocator.so: %s\n", dlerror());
+        return 1;
+    }
+
+    void* buddy_lib = dlopen("./libbuddy_allocator.so", RTLD_LAZY);
+    if (!buddy_lib) {
+        fprintf(stderr, "Ошибка загрузки библиотеки libbuddy_allocator.so: %s\n", dlerror());
+        dlclose(allocator_lib);
+        return 1;
+    }
+
     struct timespec start, end;
 
     printf("Тестирование аллокатора с обычным списком свободных блоков:\n");
@@ -131,6 +144,9 @@ int main() {
     double buddy_free_time3 = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
     printf("Освобождён блок: %p (id=%d, name=%s, value=%.2f), время: %.9f секунд\n", buddy_object3, buddy_object3->id, buddy_object3->name, buddy_object3->value, buddy_free_time3);
     allocator_destroy(list_allocator);
+
+    dlclose(allocator_lib);
+    dlclose(buddy_lib);
 
     return 0;
 }
