@@ -2,6 +2,7 @@
 #include "buddy_allocator.h"
 #include <stdio.h>
 #include <time.h>
+#include <dlfcn.h>
 
 #define MEMORY_SIZE (1 << MAX_BUDDY_ORDER)
 char global_memory[MEMORY_SIZE];

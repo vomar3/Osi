@@ -14,7 +14,9 @@ Allocator* allocator_create(void* memory, size_t size) {
     return allocator;
 }
 
-void allocator_destroy(Allocator* allocator) {}
+void allocator_destroy(Allocator* allocator) {
+    (void)allocator;
+}
 
 void* allocator_alloc(Allocator* allocator, size_t size) {
     if (size == 0) return NULL;

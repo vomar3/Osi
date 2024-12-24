@@ -1,14 +1,10 @@
 #ifndef BUDDY_ALLOCATOR_H
 #define BUDDY_ALLOCATOR_H
 
+#include "allocator.h"
 #include <stddef.h>
 
 #define MAX_BUDDY_ORDER 20
-
-typedef struct FreeBlock {
-    size_t size;
-    struct FreeBlock* next;
-} FreeBlock;
 
 typedef struct BuddyAllocator {
     void* memory_start;
